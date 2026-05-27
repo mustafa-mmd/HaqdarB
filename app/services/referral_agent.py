@@ -56,36 +56,48 @@ def get_legal_aid_by_city(city: str):
 
     # Step 0 – convert province to city if needed
     query = _resolve_query(city)
-    all_docs = list(db.collection("legal_aid").stream())
-
-    # ── Pass 1: exact, case‑insensitive ──
+    
+    # Try exact match first on capitalized city field to leverage Firestore index
     results = []
-    for doc in all_docs:
+    formatted_city = query.title() if query != "pakistan-wide" else "Pakistan-wide"
+    docs = db.collection("legal_aid").where("city", "==", formatted_city).stream()
+    for doc in docs:
         data = doc.to_dict()
-        if data.get("city", "").strip().lower() == query:
-            results.append(_format(data))
+        results.append(_format(data))
+        
     if results:
         return results
 
-    # ── Pass 2: substring match ──
-    for doc in all_docs:
-        data = doc.to_dict()
-        doc_city = data.get("city", "").strip().lower()
-        if query in doc_city or doc_city in query:
-            results.append(_format(data))
-    if results:
-        return results
-
-    # ── Pass 3: fuzzy match using difflib ──
-    known_lower = [c.lower() for c in KNOWN_CITIES]
-    close = difflib.get_close_matches(query, known_lower, n=1, cutoff=0.7)
-    if close:
-        matched_city = close[0]
-        for doc in all_docs:
-            data = doc.to_dict()
-            if data.get("city", "").strip().lower() == matched_city:
+    # If no results, do substring/fuzzy matching in-memory against KNOWN_CITIES
+    matched_cities = []
+    
+    # Pass 1: exact matching against KNOWN_CITIES list
+    for c in KNOWN_CITIES:
+        if c.lower() == query:
+            matched_cities.append(c)
+            
+    # Pass 2: substring matching against KNOWN_CITIES list
+    if not matched_cities:
+        for c in KNOWN_CITIES:
+            c_low = c.lower()
+            if query in c_low or c_low in query:
+                matched_cities.append(c)
+                
+    # Pass 3: fuzzy matching against KNOWN_CITIES list
+    if not matched_cities:
+        known_lower = [c.lower() for c in KNOWN_CITIES]
+        close = difflib.get_close_matches(query, known_lower, n=1, cutoff=0.7)
+        if close:
+            matched_cities.extend([c for c in KNOWN_CITIES if c.lower() == close[0]])
+            
+    # Query Firestore ONLY for the matched known cities
+    if matched_cities:
+        for m_city in matched_cities:
+            docs = db.collection("legal_aid").where("city", "==", m_city).stream()
+            for doc in docs:
+                data = doc.to_dict()
                 results.append(_format(data))
-
+                
     return results
 
 

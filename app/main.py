@@ -8,8 +8,13 @@ import time
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+
 from app.api.v1.endpoints import query
 from app.core.config import settings
+from app.core.limiter import limiter
+from app.core.validation import validate_environment
 
 # ── Structured Logging Setup ──
 logging.basicConfig(
@@ -31,21 +36,21 @@ app = FastAPI(
     redoc_url="/redoc" if settings.DEBUG else None,
 )
 
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+@app.on_event("startup")
+def startup_event():
+    validate_environment()
+
 # ── CORS Middleware (Production Secure) ──
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "http://localhost:3000",
-        "https://haqdar.pk",
-        "https://haqdar-app.web.app",
-    ],
+    allow_origins=["*"],  # Allow all origins in development
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
 
 # ── Request Timing & Logging Middleware ──
 @app.middleware("http")
@@ -86,7 +91,7 @@ async def http_exception_handler(request: Request, exc: HTTPException):
 
 
 # ── Routes ──
-from app.api.v1.endpoints import query, whatsapp, lawyers, forum, admin, firm
+from app.api.v1.endpoints import query, whatsapp, lawyers, forum, admin, firm, study
 
 app.include_router(query.router, prefix="/api/v1", tags=["HaqDar Legal API"])
 app.include_router(whatsapp.router, prefix="/api/v1/whatsapp", tags=["WhatsApp Bot"])
@@ -94,6 +99,7 @@ app.include_router(lawyers.router, prefix="/api/v1/lawyers", tags=["Lawyer Marke
 app.include_router(forum.router, prefix="/api/v1/forum", tags=["Community Forum"])
 app.include_router(admin.router, prefix="/api/v1/admin", tags=["Admin Control"])
 app.include_router(firm.router, prefix="/api/v1/firm", tags=["Firm Management"])
+app.include_router(study.router, prefix="/api/v1/study", tags=["HaqDar Study Mode"])
 
 
 # ── Root ──

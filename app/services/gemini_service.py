@@ -13,6 +13,7 @@ from google import genai
 from google.genai.types import GenerateContentConfig, GoogleSearch, HttpOptions, Tool, Content, Part
 from dotenv import load_dotenv
 from app.core.config import settings
+from app.middleware.pii_scrubber import scrub_pii
 
 logger = logging.getLogger(__name__)
 load_dotenv()
@@ -100,14 +101,18 @@ def _build_conversation_contents(
     """
     contents = []
 
+    # Scrub user query input before sending
+    user_query = scrub_pii(user_query)
+
     if conversation_history:
         # Use last 6 messages (3 turns) for context
         recent = conversation_history[-6:]
         for msg in recent:
             role = "user" if msg.get("role") == "user" else "model"
+            scrubbed_content = scrub_pii(msg.get("content", ""))
             contents.append(Content(
                 role=role,
-                parts=[Part(text=msg.get("content", ""))]
+                parts=[Part(text=scrubbed_content)]
             ))
 
     # Add current message with system context prepended if available
@@ -127,6 +132,27 @@ def _build_conversation_contents(
 # CORE: LEGAL EXPLANATION WITH MULTI-TURN HISTORY
 # ════════════════════════════════════════════════════════════════════════════════
 
+def log_token_usage(uid: Optional[str], prompt_tokens: int, candidates_tokens: int, model_name: str):
+    """
+    Log token usage per user to the Firestore cost_log collection.
+    """
+    if not uid:
+        return
+    try:
+        from google.cloud import firestore
+        db = firestore.Client()
+        db.collection("cost_log").add({
+            "uid": uid,
+            "input_tokens": prompt_tokens,
+            "output_tokens": candidates_tokens,
+            "model_name": model_name,
+            "timestamp": firestore.SERVER_TIMESTAMP,
+        })
+        logger.info(f"Logged token usage for {uid}: model={model_name}, input={prompt_tokens}, output={candidates_tokens}")
+    except Exception as e:
+        logger.error(f"Failed to log token usage to Firestore: {e}")
+
+
 def get_legal_explanation(
     user_query: str,
     law_texts: list[str],
@@ -134,11 +160,13 @@ def get_legal_explanation(
     language: str = "en",
     script: str = "latin",
     conversation_history: Optional[List[dict]] = None,
+    uid: Optional[str] = None,
 ) -> str:
     """
     Generates a professional legal explanation grounded in Pakistani law.
     Supports multi-turn conversation history for contextual follow-ups.
     """
+    user_query = scrub_pii(user_query)
     context = "\n\n".join(law_texts) if law_texts else ""
     weak_match = not context.strip() or top_distance > 0.3
 
@@ -184,6 +212,16 @@ def get_legal_explanation(
             contents=contents,
             config=GenerateContentConfig(**config_params),
         )
+
+        # Log token usage to Firestore
+        if response.usage_metadata:
+            log_token_usage(
+                uid=uid,
+                prompt_tokens=response.usage_metadata.prompt_token_count,
+                candidates_tokens=response.usage_metadata.candidates_token_count,
+                model_name=settings.GEMINI_FLASH_MODEL,
+            )
+
         return response.text.strip() if response.text else "No response generated."
     except Exception as e:
         logger.error(f"Legal explanation error: {e}")
@@ -200,10 +238,12 @@ def get_legal_explanation_stream(
     language: str = "en",
     script: str = "latin",
     conversation_history: Optional[List[dict]] = None,
+    uid: Optional[str] = None,
 ):
     """
     Generates a professional legal explanation grounded in Pakistani law using a streaming generator.
     """
+    user_query = scrub_pii(user_query)
     context = "\n\n".join(law_texts) if law_texts else ""
     weak_match = not context.strip() or top_distance > 0.3
 
@@ -247,12 +287,28 @@ def get_legal_explanation_stream(
             contents=contents,
             config=GenerateContentConfig(**config_params),
         )
+
+        prompt_tokens = 0
+        candidates_tokens = 0
+
         for chunk in response_stream:
+            if chunk.usage_metadata:
+                prompt_tokens = chunk.usage_metadata.prompt_token_count
+                candidates_tokens = chunk.usage_metadata.candidates_token_count
             if chunk.text:
                 # Strip out hindi/gurmukhi characters immediately from chunk
                 cleaned = re.sub(r'[\u0900-\u097F\u0A00-\u0A7F]', '', chunk.text)
                 if cleaned:
                     yield cleaned
+
+        # Log token usage at the end of the stream
+        if uid and prompt_tokens > 0:
+            log_token_usage(
+                uid=uid,
+                prompt_tokens=prompt_tokens,
+                candidates_tokens=candidates_tokens,
+                model_name=settings.GEMINI_FLASH_MODEL,
+            )
     except Exception as e:
         logger.error(f"Streaming legal explanation error: {e}")
         yield "I apologize, but I encountered an error generating the legal explanation."

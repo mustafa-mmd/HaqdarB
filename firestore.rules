@@ -1,0 +1,136 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper: Checks if the request is authenticated
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    // Helper: Checks if the authenticated user owns the document path
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    // -------------------------------------------------------------
+    // USERS COLLECTION & SUBCOLLECTIONS
+    // -------------------------------------------------------------
+    // Protects user profiles, settings, and direct chat channels.
+    match /users/{userId} {
+      // Allow read/write to the user document itself if it's the owner
+      allow read, write: if isOwner(userId);
+
+      // User's Chats: Only the specific owner can create, read, or update their chats
+      match /chats/{chatId} {
+        allow read, write: if isOwner(userId);
+
+        // Chat Messages: Only the chat owner can query or append messages
+        match /messages/{messageId} {
+          allow read, write: if isOwner(userId);
+        }
+      }
+
+      // Profile settings & Daily/Monthly usage logs are strictly backend-managed.
+      // Blocking client-side access prevents quota tampering and plan spoofing.
+      match /profile/{document=**} {
+        allow read, write: if false;
+      }
+      match /usage_daily/{document=**} {
+        allow read, write: if false;
+      }
+      match /usage_monthly/{document=**} {
+        allow read, write: if false;
+      }
+    }
+
+    // -------------------------------------------------------------
+    // LAWYERS & PROFESSIONAL PROFILES
+    // -------------------------------------------------------------
+    // Managed exclusively through Python backend service controllers.
+    // Client SDK has no business accessing these directly, ensuring complete
+    // protection of contact info (phone/email) and preventing fake reviews.
+    match /lawyers/{document=**} {
+      allow read, write: if false;
+    }
+
+    // -------------------------------------------------------------
+    // CONSULTATION REQUESTS (LEADS)
+    // -------------------------------------------------------------
+    // Client-side direct access is disabled to prevent database scanning and data leakage.
+    // Requests are processed, stored, and sent via backend endpoints.
+    match /consultation_requests/{document=**} {
+      allow read, write: if false;
+    }
+
+    // -------------------------------------------------------------
+    // COMMUNITY FORUM
+    // -------------------------------------------------------------
+    // All post creations, edits, deletes, and comment moderation happen via 
+    // the backend API, which sanitizes text and tracks user authority.
+    match /forum_posts/{document=**} {
+      allow read, write: if false;
+    }
+
+    // -------------------------------------------------------------
+    // FIRM MEMBERSHIP
+    // -------------------------------------------------------------
+    // Firm invites, status tracking, and member administration are governed
+    // by business logic on the backend. Client-side access is disabled.
+    match /firm_members/{document=**} {
+      allow read, write: if false;
+    }
+
+    // -------------------------------------------------------------
+    // SYSTEM & AUDIT LOGS
+    // -------------------------------------------------------------
+    // Legal compliance auditing and service metrics. Managed strictly by backend.
+    match /audit_log/{document=**} {
+      allow read, write: if false;
+    }
+
+    // -------------------------------------------------------------
+    // LEGAL AID & LAW CORPUS
+    // -------------------------------------------------------------
+    // Static resource databases seeded and cached in Python backend.
+    match /legal_aid/{document=**} {
+      allow read, write: if false;
+    }
+    match /law_corpus/{document=**} {
+      allow read, write: if false;
+    }
+
+    // -------------------------------------------------------------
+    // STUDY PLATFORM
+    // -------------------------------------------------------------
+    // Flashcards, student notes, quiz attempts, answer keys, case briefs.
+    // Managed strictly by backend. Client-side SDK has no direct access.
+    match /student_notes/{document=**} {
+      allow read, write: if false;
+    }
+    match /flashcards/{document=**} {
+      allow read, write: if false;
+    }
+    match /quiz_answer_keys/{document=**} {
+      allow read, write: if false;
+    }
+    match /quiz_attempts/{document=**} {
+      allow read, write: if false;
+    }
+    match /comparison_attempts/{document=**} {
+      allow read, write: if false;
+    }
+    match /case_briefs/{document=**} {
+      allow read, write: if false;
+    }
+
+    // -------------------------------------------------------------
+    // DEFAULT CATCH-ALL
+    // -------------------------------------------------------------
+    // Standard Silicon Valley security posture: Deny all reads and writes
+    // by default to any unmapped collections.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

@@ -1,0 +1,62 @@
+# ── Environment Variables & Credentials (SENSITIVE) ──
+.env
+.env.*
+!.env.example
+haqdar-key.json
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+secrets.yaml
+service-account*.json
+credentials*.json
+*token*.json
+client_secrets.json
+
+# ── Python / Virtual Environments ──
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+ENV/
+env/
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+pip-log.txt
+
+# ── Local Development Databases ──
+*.db
+*.sqlite
+*.sqlite3
+
+# ── Heavy Datasets & Retrieval Cache ──
+law-embeddings*.json
+uploaded_ids.txt
+new_laws_list.txt
+real_laws/
+text_cache/
+
+# ── System Logs & Temporary Files ──
+logs/
+*.log
+output/
+scratch/
+.ipynb_checkpoints/
+
+# ── IDEs, Editors & OS files ──
+.vscode/
+!.vscode/extensions.json
+!.vscode/launch.json
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+.DS_Store
+Thumbs.db

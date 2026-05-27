@@ -17,10 +17,9 @@ class Settings:
     APP_NAME: str = "HaqDar AI"
     APP_VERSION: str = "2.0.0"
     DEBUG: bool = os.getenv("DEBUG", "false").lower() == "true"
-    ENVIRONMENT: str = os.getenv("ENVIRONMENT", "development")  # development | production
+    ENVIRONMENT: str = os.getenv("ENVIRONMENT", "development")
 
     # ── CORS ──
-    # In production, restrict to your actual domain
     ALLOWED_ORIGINS: list = [
         "http://localhost:5173",
         "http://localhost:3000",
@@ -31,11 +30,14 @@ class Settings:
         "https://haqdar-app.firebaseapp.com",
     ]
 
-    # ── Google Cloud / Vertex AI ──
+    # ── Google Cloud / Vertex AI (embeddings only — index vars removed) ──
     PROJECT_ID: str = os.getenv("PROJECT_ID", "")
     LOCATION: str = os.getenv("LOCATION", "us-central1")
-    INDEX_ENDPOINT_ID: str = os.getenv("INDEX_ENDPOINT_ID", "")
-    DEPLOYED_INDEX_ID: str = os.getenv("DEPLOYED_INDEX_ID", "")
+
+    # ── Qdrant Vector Database ──
+    QDRANT_URL: str = os.getenv("QDRANT_URL", "")
+    QDRANT_API_KEY: str = os.getenv("QDRANT_API_KEY", "")
+    QDRANT_COLLECTION: str = os.getenv("QDRANT_COLLECTION", "law_corpus")
 
     # ── AI Keys ──
     GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
@@ -56,11 +58,11 @@ class Settings:
     # ── Notifications (Twilio & SendGrid) ──
     TWILIO_ACCOUNT_SID: str = os.getenv("TWILIO_ACCOUNT_SID", "")
     TWILIO_AUTH_TOKEN: str = os.getenv("TWILIO_AUTH_TOKEN", "")
-    TWILIO_WHATSAPP_NUMBER: str = os.getenv("TWILIO_WHATSAPP_NUMBER", "whatsapp:+14155238886") # Sandbox
-    
+    TWILIO_WHATSAPP_NUMBER: str = os.getenv("TWILIO_WHATSAPP_NUMBER", "whatsapp:+14155238886")
+
     SENDGRID_API_KEY: str = os.getenv("SENDGRID_API_KEY", "")
     SYSTEM_EMAIL: str = os.getenv("SYSTEM_EMAIL", "notifications@haqdar.pk")
-    
+
     # ── Timeouts ──
     GEMINI_TIMEOUT_SECONDS: int = 60
     VECTOR_SEARCH_TIMEOUT_SECONDS: int = 10

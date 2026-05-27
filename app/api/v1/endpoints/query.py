@@ -38,6 +38,7 @@ from app.services.usage_service import (
     log_audit_event,
 )
 from app.services.transcription_service import transcribe_audio
+from app.core.limiter import limiter
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -216,13 +217,14 @@ async def update_profile(request: UserProfileUpdate):
 # ════════════════════════════════════════════════════════════════════════════════
 
 @router.post("/query")
-async def legal_query(request: QueryRequest):
+@limiter.limit("20/minute")
+async def legal_query(query_data: QueryRequest, request: Request):
     """
     Main legal Q&A endpoint.
     Searches law corpus, generates multilingual explanation grounded in Pakistani law.
     Supports conversation history for multi-turn memory.
     """
-    user_info = verify_token(request.token)
+    user_info = verify_token(query_data.token)
     if not user_info:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
     uid = user_info["uid"]
@@ -233,44 +235,40 @@ async def legal_query(request: QueryRequest):
         raise HTTPException(status_code=429, detail=msg)
 
     # ── Language detection ──
-    user_lang = request.language
+    user_lang = query_data.language
     if user_lang:
         language = user_lang
         script = "arabic" if language in ("ur", "ps", "pa", "sd", "bal") else "latin"
     else:
-        language, script = detect_language_and_script(request.text)
+        language, script = detect_language_and_script(query_data.text)
 
-    category = classify_legal_category(request.text)
+    category = classify_legal_category(query_data.text)
 
     # ── Vector search ──
     try:
-        matches = search_similar_laws(request.text, neighbor_count=5)
+        matches = search_similar_laws(
+            query_data.text,
+            neighbor_count=5,
+            language=language if language != "en" else None,
+            category=category if category != "general" else None,
+        )
     except Exception as e:
         logger.error(f"Vector search failed: {e}")
         matches = []
 
-    # ── Fetch law texts from Firestore ──
-    db = get_db()
-    law_texts = []
-    if matches:
-        for match in matches:
-            try:
-                doc_ref = db.collection("law_corpus").document(match["id"])
-                doc = doc_ref.get()
-                if doc.exists:
-                    law_texts.append(doc.to_dict().get("text", ""))
-            except Exception as e:
-                logger.warning(f"Failed to fetch law doc {match['id']}: {e}")
+    # Qdrant returns text directly in payload — no Firestore needed
+    law_texts = [m["text"] for m in matches if m.get("text")]
 
     # ── Generate explanation with conversation history ──
     top_distance = matches[0]["distance"] if matches else 999.0
     explanation = get_legal_explanation(
-        request.text,
+        query_data.text,
         law_texts,
         top_distance,
         language,
         script,
-        conversation_history=request.conversation_history,
+        conversation_history=query_data.conversation_history,
+        uid=uid,
     )
 
     # ── Safety: strip any Hindi/Gurmukhi characters ──
@@ -313,22 +311,18 @@ async def legal_query_stream(request: QueryRequest):
     category = classify_legal_category(request.text)
 
     try:
-        matches = search_similar_laws(request.text, neighbor_count=5)
+        matches = search_similar_laws(
+            request.text,
+            neighbor_count=5,
+            language=language if language != "en" else None,
+            category=category if category != "general" else None,
+        )
     except Exception as e:
         logger.error(f"Vector search failed: {e}")
         matches = []
 
-    db = get_db()
-    law_texts = []
-    if matches:
-        for match in matches:
-            try:
-                doc_ref = db.collection("law_corpus").document(match["id"])
-                doc = doc_ref.get()
-                if doc.exists:
-                    law_texts.append(doc.to_dict().get("text", ""))
-            except Exception as e:
-                logger.warning(f"Failed to fetch law doc {match['id']}: {e}")
+    # Qdrant returns text directly in payload — no Firestore needed
+    law_texts = [m["text"] for m in matches if m.get("text")]
 
     top_distance = matches[0]["distance"] if matches else 999.0
 
@@ -353,6 +347,7 @@ async def legal_query_stream(request: QueryRequest):
             language,
             script,
             conversation_history=request.conversation_history,
+            uid=uid,
         )
         for chunk in stream:
             payload = {"type": "chunk", "text": chunk}
@@ -395,14 +390,14 @@ async def case_analyze(request: CaseAnalyzeRequest):
 # ════════════════════════════════════════════════════════════════════════════════
 # UNIVERSAL LEGAL DOCUMENT DRAFTING
 # ════════════════════════════════════════════════════════════════════════════════
-
 @router.post("/draft-legal", response_model=UniversalDraftResponse)
-async def universal_draft(request: QueryRequest):
+@limiter.limit("10/minute")
+async def universal_draft(query_data: QueryRequest, request: Request):
     """
     Universal legal document generator.
     Covers 80 legal categories with validated Pakistani document formats.
     """
-    user_info = verify_token(request.token)
+    user_info = verify_token(query_data.token)
     if not user_info:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
     uid = user_info["uid"]
@@ -411,41 +406,44 @@ async def universal_draft(request: QueryRequest):
     if not allowed:
         raise HTTPException(status_code=429, detail=msg)
 
+    # ── Language detection and category classification ──
+    user_lang = query_data.language
+    if user_lang:
+        language = user_lang
+    else:
+        language, _ = detect_language_and_script(query_data.text)
+
+    category = classify_legal_category(query_data.text)
+
     # ── Vector search ──
     try:
-        matches = search_similar_laws(request.text, neighbor_count=5)
+        matches = search_similar_laws(
+            query_data.text,
+            neighbor_count=5,
+            language=language if language != "en" else None,
+            category=category if category != "general" else None,
+        )
     except Exception:
         matches = []
 
-    db = get_db()
-    law_texts = []
-    if matches:
-        for match in matches:
-            try:
-                doc_ref = db.collection("law_corpus").document(match["id"])
-                doc = doc_ref.get()
-                if doc.exists:
-                    law_texts.append(doc.to_dict().get("text", ""))
-            except Exception:
-                pass
+    # Qdrant returns text directly in payload — no Firestore needed
+    law_texts = [m["text"] for m in matches if m.get("text")]
 
     top_distance = matches[0]["distance"] if matches else 999.0
     weak_match = not law_texts or top_distance > 0.3
 
-    lang = request.language or "en"
+    lang = query_data.language or "en"
     if weak_match:
-        result = generate_universal_document_with_search(request.text, lang)
+        result = generate_universal_document_with_search(query_data.text, lang)
     else:
         context = "\n\n".join(law_texts)
-        result = generate_universal_document_with_context(request.text, context, lang)
+        result = generate_universal_document_with_context(query_data.text, context, lang)
 
     log_audit_event(uid, "draft_generated", {
         "domain": result.get("domain", ""),
         "document_type": result.get("document_type", ""),
     })
     return result
-
-
 # ════════════════════════════════════════════════════════════════════════════════
 # DOCUMENT TEMPLATE GENERATOR (NEW)
 # ════════════════════════════════════════════════════════════════════════════════
@@ -689,6 +687,35 @@ async def legal_referral(city: str):
     return {"city": city, "providers": results}
 
 
+_cached_cities = None
+_last_city_cache_time = 0
+CITY_CACHE_TTL = 300 # 5 minutes
+
+def get_all_cities_cached(db):
+    global _cached_cities, _last_city_cache_time
+    import time
+    now = time.time()
+    if _cached_cities is None or now - _last_city_cache_time > CITY_CACHE_TTL:
+        try:
+            # Optimize Firestore read: select only "city" field to avoid fetching huge docs
+            docs = db.collection("legal_aid").select(["city"]).stream()
+            cities = set()
+            for doc in docs:
+                city = doc.to_dict().get("city", "").strip()
+                if city:
+                    cities.add(city)
+            if cities:
+                _cached_cities = list(cities)
+                _last_city_cache_time = now
+            else:
+                from app.services.referral_agent import KNOWN_CITIES
+                _cached_cities = KNOWN_CITIES
+        except Exception as e:
+            logger.error(f"Error fetching cities for cache: {e}")
+            from app.services.referral_agent import KNOWN_CITIES
+            return KNOWN_CITIES
+    return _cached_cities
+
 @router.get("/referral/autocomplete")
 async def autocomplete_city(q: str = ""):
     """Return city suggestions based on partial input (with caching)."""
@@ -699,14 +726,7 @@ async def autocomplete_city(q: str = ""):
     db = get_db()
 
     try:
-        all_docs = list(db.collection("legal_aid").stream())
-        cities = set()
-        for doc in all_docs:
-            data = doc.to_dict()
-            city_name = data.get("city", "").strip()
-            if city_name:
-                cities.add(city_name)
-
+        cities = get_all_cities_cached(db)
         suggestions = []
         for city in cities:
             city_lower = city.lower()
@@ -729,7 +749,9 @@ async def autocomplete_city(q: str = ""):
 # ════════════════════════════════════════════════════════════════════════════════
 
 @router.post("/transcribe")
+@limiter.limit("10/minute")
 async def transcribe_speech(
+    request: Request,
     file: UploadFile = File(...),
     lang: str = Form("ur"),
     token: Optional[str] = Form(None),

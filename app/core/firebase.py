@@ -22,7 +22,8 @@ except Exception as e:
 
 def verify_token(token: str) -> dict | None:
     """
-    Verifies a Firebase ID token and returns the user's UID and Email.
+    Verifies a Firebase ID token and returns the user's UID, Email, Admin claim,
+    and pricing tier claims (student_pro, premium).
     Returns None if token is invalid or expired.
     """
     if not token:
@@ -31,7 +32,10 @@ def verify_token(token: str) -> dict | None:
         decoded = auth.verify_id_token(token)
         return {
             "uid": decoded["uid"],
-            "email": decoded.get("email")
+            "email": decoded.get("email"),
+            "admin": decoded.get("admin", False) is True,
+            "student_pro": decoded.get("student_pro", False) is True,
+            "premium": decoded.get("premium", False) is True,
         }
     except auth.ExpiredIdTokenError:
         logger.warning("Firebase token expired")

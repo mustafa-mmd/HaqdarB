@@ -6,8 +6,16 @@ Tracks per-user API usage and enforces subscription tier limits.
 import logging
 from datetime import datetime, timezone
 from google.cloud import firestore
+from fastapi import HTTPException
+from cachetools import TTLCache
 
 logger = logging.getLogger(__name__)
+
+# 5-minute TTL cache for user plans (max 10000 users)
+plan_cache = TTLCache(maxsize=10000, ttl=300)
+
+# 60-second TTL cache for usage stats (max 10000 users)
+usage_cache = TTLCache(maxsize=10000, ttl=60)
 
 # ── Quota limits per plan (per day for queries, per month for others) ──
 PLAN_LIMITS = {
@@ -43,11 +51,15 @@ def _get_db():
 
 def get_user_plan(uid: str) -> str:
     """Get the user's subscription plan from Firestore. Defaults to 'free'."""
+    if uid in plan_cache:
+        return plan_cache[uid]
     try:
         db = _get_db()
         doc = db.collection("users").document(uid).collection("profile").document("settings").get()
         if doc.exists:
-            return doc.to_dict().get("plan", "free")
+            plan = doc.to_dict().get("plan", "free")
+            plan_cache[uid] = plan
+            return plan
     except Exception as e:
         logger.error(f"Failed to get user plan for {uid}: {e}")
     return "free"
@@ -55,6 +67,8 @@ def get_user_plan(uid: str) -> str:
 
 def get_usage_stats(uid: str) -> dict:
     """Get current usage stats for a user."""
+    if uid in usage_cache:
+        return usage_cache[uid]
     try:
         db = _get_db()
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -66,12 +80,14 @@ def get_usage_stats(uid: str) -> dict:
         day_data = day_doc.to_dict() if day_doc.exists else {}
         month_data = month_doc.to_dict() if month_doc.exists else {}
 
-        return {
+        stats = {
             "queries_today": day_data.get("queries", 0),
             "drafts_this_month": month_data.get("drafts", 0),
             "analyses_this_month": month_data.get("analyses", 0),
             "documents_this_month": month_data.get("documents", 0),
         }
+        usage_cache[uid] = stats
+        return stats
     except Exception as e:
         logger.error(f"Failed to get usage stats for {uid}: {e}")
         return {
@@ -92,7 +108,6 @@ def check_and_increment_usage(uid: str, feature: str) -> tuple[bool, str]:
         db = _get_db()
         
         # ENSURE TOP-LEVEL USER DOC EXISTS (for Admin Dashboard)
-        # We try to get user info if possible, or just create a stub
         user_ref = db.collection("users").document(uid)
         if not user_ref.get().exists:
             user_ref.set({
@@ -140,12 +155,19 @@ def check_and_increment_usage(uid: str, feature: str) -> tuple[bool, str]:
                 {"documents": firestore.Increment(1)}, merge=True
             )
 
+        # Invalidate usage cache so next read gets updated values
+        if uid in usage_cache:
+            del usage_cache[uid]
+
         return True, "OK"
 
     except Exception as e:
         logger.error(f"Usage check failed for {uid}: {e}")
-        # Fail open — don't block users if usage tracking has an issue
-        return True, "OK"
+        # Fail closed - raise 503 instead of allowing bypass
+        raise HTTPException(
+            status_code=503, 
+            detail="Billing and quota validation system is currently unavailable. Please try again shortly."
+        )
 
 
 def get_user_profile(uid: str) -> dict:
@@ -167,6 +189,9 @@ def update_user_profile(uid: str, data: dict) -> bool:
         db.collection("users").document(uid).collection("profile").document("settings").set(
             {**data, "updatedAt": firestore.SERVER_TIMESTAMP}, merge=True
         )
+        # Invalidate plan cache so next read gets updated plan
+        if uid in plan_cache:
+            del plan_cache[uid]
         return True
     except Exception as e:
         logger.error(f"Failed to update profile for {uid}: {e}")

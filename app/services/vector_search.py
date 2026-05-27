@@ -1,20 +1,31 @@
+# app/services/vector_search.py
+"""
+HaqDar AI — Vector Search Service
+Embedding: Vertex AI text-embedding-005
+Search: Qdrant Cloud via HTTP (no qdrant-client package needed)
+"""
 import os
 import time
+import json
+import logging
+import urllib.request
+import urllib.error
 from google.cloud import aiplatform
 from vertexai.language_models import TextEmbeddingModel, TextEmbeddingInput
 from dotenv import load_dotenv
-from google.api_core import exceptions
 
 load_dotenv()
 
-PROJECT_ID = os.getenv("PROJECT_ID")
-LOCATION = os.getenv("LOCATION")
-INDEX_ENDPOINT_ID = os.getenv("INDEX_ENDPOINT_ID")
-DEPLOYED_INDEX_ID = os.getenv("DEPLOYED_INDEX_ID")
+logger = logging.getLogger(__name__)
 
-# Initialize Vertex AI lazily to avoid crashing the server on startup if billing is disabled
+PROJECT_ID   = os.getenv("PROJECT_ID")
+LOCATION     = os.getenv("LOCATION")
+QDRANT_URL   = os.getenv("QDRANT_URL", "").rstrip("/")
+QDRANT_KEY   = os.getenv("QDRANT_API_KEY")
+COLLECTION   = os.getenv("QDRANT_COLLECTION", "law_corpus")
+
 _embedding_model = None
-_vector_client = None
+
 
 def get_embedding_model():
     global _embedding_model
@@ -23,69 +34,89 @@ def get_embedding_model():
         _embedding_model = TextEmbeddingModel.from_pretrained("text-embedding-005")
     return _embedding_model
 
-def get_vector_client():
-    global _vector_client
-    if _vector_client is None:
-        PUBLIC_ENDPOINT_DOMAIN = "207991304.asia-south1-1052663637521.vdb.vertexai.goog"
-        client_options = {"api_endpoint": PUBLIC_ENDPOINT_DOMAIN}
-        _vector_client = aiplatform.gapic.MatchServiceClient(client_options=client_options)
-    return _vector_client
 
-
-def generate_embedding(text: str) -> list[float]:
-    """Generate embedding for a single text query."""
+def generate_embedding(text: str) -> list:
     try:
         model = get_embedding_model()
         inputs = [TextEmbeddingInput(text, task_type="RETRIEVAL_QUERY")]
         embeddings = model.get_embeddings(inputs)
         return embeddings[0].values
     except Exception as e:
-        print(f"Warning: Could not generate embedding (Billing/API error): {e}")
-        # Return a zero vector fallback to prevent complete crashes
+        logger.warning(f"Embedding error: {e}")
         return [0.0] * 768
 
 
-def search_similar_laws(query_text: str, neighbor_count: int = 3):
-    """Search for the most relevant law sections using vector similarity, with retries."""
-    query_embedding = generate_embedding(query_text)
+def qdrant_search(query_vector, language=None, category=None, limit=5):
+    """Search Qdrant via HTTP REST — no qdrant-client needed."""
+    url = f"{QDRANT_URL}/collections/{COLLECTION}/points/search"
 
-    endpoint_path = f"projects/{PROJECT_ID}/locations/{LOCATION}/indexEndpoints/{INDEX_ENDPOINT_ID}"
+    body = {
+        "vector": query_vector,
+        "limit": limit,
+        "with_payload": True
+    }
 
-    request = aiplatform.gapic.FindNeighborsRequest(
-        index_endpoint=endpoint_path,
-        deployed_index_id=DEPLOYED_INDEX_ID,
-        queries=[
-            aiplatform.gapic.FindNeighborsRequest.Query(
-                datapoint=aiplatform.gapic.IndexDatapoint(feature_vector=query_embedding),
-                neighbor_count=neighbor_count
-            )
-        ]
-    )
+    # Add filters if provided
+    conditions = []
+    if language:
+        conditions.append({
+            "key": "language",
+            "match": {"value": language}
+        })
+    if category:
+        conditions.append({
+            "key": "category",
+            "match": {"value": category}
+        })
 
-    # Retry loop for transient network errors
-    max_retries = 3
-    for attempt in range(max_retries):
+    if conditions:
+        body["filter"] = {"must": conditions}
+
+    data = json.dumps(body).encode("utf-8")
+    headers = {
+        "Content-Type": "application/json",
+        "api-key": QDRANT_KEY
+    }
+
+    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+
+    for attempt in range(3):
         try:
-            client = get_vector_client()
-            response = client.find_neighbors(request=request)
-            break  # success, exit loop
-        except exceptions.ServiceUnavailable as e:
-            if attempt == max_retries - 1:
-                print(f"Warning: Vector search failed after retries: {e}")
-                return []
-            wait = 2 ** attempt  # 1s, 2s, 4s
-            print(f"Vector search temporarily unavailable, retrying in {wait}s...")
-            time.sleep(wait)
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                result = json.loads(resp.read().decode("utf-8"))
+                return result.get("result", [])
         except Exception as e:
-            # Other errors (permission, etc.) should gracefully fail
-            print(f"Warning: Vector search failed (Billing/API error): {e}")
-            return []
+            if attempt == 2:
+                logger.warning(f"Qdrant search failed: {e}")
+                return []
+            time.sleep(2 ** attempt)
 
-    results = []
-    if response.nearest_neighbors:
-        for neighbor in response.nearest_neighbors[0].neighbors:
-            results.append({
-                "id": neighbor.datapoint.datapoint_id,
-                "distance": neighbor.distance
-            })
-    return results
+    return []
+
+
+def search_similar_laws(
+    query_text: str,
+    neighbor_count: int = 3,
+    language: str = None,
+    category: str = None
+):
+    """
+    Main search function — same interface as before.
+    Returns: [{"id": ..., "distance": ..., "law_name": ..., "text": ...}]
+    """
+    query_embedding = generate_embedding(query_text)
+    hits = qdrant_search(query_embedding, language, category, neighbor_count)
+
+    return [
+        {
+            "id":             str(hit.get("id", "")),
+            "distance":       hit.get("score", 0),
+            "law_name":       hit["payload"].get("law_name", ""),
+            "section_number": hit["payload"].get("section_number", ""),
+            "language":       hit["payload"].get("language", ""),
+            "category":       hit["payload"].get("category", ""),
+            "text":           hit["payload"].get("text", ""),
+            "score":          hit.get("score", 0),
+        }
+        for hit in hits
+    ]

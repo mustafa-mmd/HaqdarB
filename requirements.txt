@@ -1,0 +1,13 @@
+fastapi==0.115.11
+uvicorn[standard]==0.34.0
+google-cloud-aiplatform==1.143.0
+firebase-admin==6.6.0
+python-dotenv==1.0.1
+pydantic==2.12.5
+google-genai>=1.0.0
+PyMuPDF>=1.24.0
+python-multipart==0.0.9
+httpx>=0.28.1
+cachetools>=5.3.0
+slowapi>=0.1.9
+pillow>=10.0.0

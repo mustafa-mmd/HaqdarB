@@ -24,19 +24,22 @@ async def check_is_admin(request: Request):
     user_info = verify_token(token)
     if not user_info:
         return {"is_admin": False}
-    uid = user_info["uid"]
-    email = user_info.get("email", "")
-    founders = ["mustafajamalshabqadar@gmail.com"]
-    if email in founders:
-        return {"is_admin": True}
-    db = get_db()
-    try:
-        doc = db.collection("users").document(uid).get()
-        if doc.exists:
-            return {"is_admin": doc.to_dict().get("is_admin", False)}
-    except Exception:
-        pass
-    return {"is_admin": False}
+    return {"is_admin": user_info.get("admin", False)}
+
+
+@router.get("/verify")
+async def verify_admin_status(request: Request):
+    """Verifies admin privileges and returns 200 OK, otherwise raises 403 Forbidden."""
+    auth_header = request.headers.get("Authorization")
+    if not auth_header or not auth_header.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing or invalid token")
+    token = auth_header.split(" ")[1]
+    user_info = verify_token(token)
+    if not user_info:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    if not user_info.get("admin", False):
+        raise HTTPException(status_code=403, detail="Unauthorized: Admin access required")
+    return {"status": "success", "message": "Admin status verified"}
 
 @router.get("/stats")
 async def get_admin_stats(request: Request):
@@ -134,18 +137,9 @@ async def get_admin_stats(request: Request):
     }
 
 async def check_admin(uid: str, email: str, db):
-    """Verify if user is an admin, with auto-promotion for founder."""
-    user_doc = db.collection("users").document(uid).get()
-    user_data = user_doc.to_dict() if user_doc.exists else {}
-    
-    # Auto-promote founder
-    founders = ["mustafajamalshabqadar@gmail.com"]
-    if email in founders:
-        if not user_data.get("is_admin"):
-            db.collection("users").document(uid).set({"is_admin": True, "email": email}, merge=True)
-        return True
-        
-    return user_data.get("is_admin", False)
+    """Verify if user is an admin via Firebase custom claims."""
+    from app.core.firebase import is_admin
+    return is_admin(uid)
 
 @router.post("/approve-lawyer")
 async def approve_lawyer(lawyer_id: str, request: Request):
@@ -204,10 +198,9 @@ async def delete_user(user_id: str, request: Request):
         raise HTTPException(status_code=401, detail="Invalid token")
     
     db = get_db()
-    # Admin check
-    admin_doc = db.collection("users").document(user_info["uid"]).get()
-    if not admin_doc.exists or not admin_doc.to_dict().get("is_admin"):
-        raise HTTPException(status_code=403, detail="Unauthorized")
+    # Admin check using Firebase custom claims
+    if not user_info.get("admin", False):
+        raise HTTPException(status_code=403, detail="Unauthorized: Admin access required")
     
     db.collection("users").document(user_id).delete()
     return {"success": True}
@@ -218,6 +211,14 @@ async def get_all_users(request: Request):
     auth_header = request.headers.get("Authorization")
     if not auth_header or not auth_header.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Missing or invalid token")
+    
+    token = auth_header.split(" ")[1]
+    user_info = verify_token(token)
+    if not user_info:
+        raise HTTPException(status_code=401, detail="Invalid token")
+        
+    if not user_info.get("admin", False):
+        raise HTTPException(status_code=403, detail="Unauthorized: Admin access required")
     
     db = get_db()
     docs = db.collection("users").limit(100).stream()
@@ -245,3 +246,71 @@ async def get_all_users(request: Request):
         data["id"] = uid
         users.append(data)
     return users
+
+
+@router.get("/costs")
+async def get_model_costs(request: Request):
+    """Aggregate token counts and compute model expenditure (Admin only)."""
+    auth_header = request.headers.get("Authorization")
+    if not auth_header or not auth_header.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing or invalid token")
+    
+    token = auth_header.split(" ")[1]
+    user_info = verify_token(token)
+    if not user_info:
+        raise HTTPException(status_code=401, detail="Invalid token")
+        
+    if not user_info.get("admin", False):
+        raise HTTPException(status_code=403, detail="Unauthorized: Admin access required")
+        
+    db = get_db()
+    
+    total_input_tokens = 0
+    total_output_tokens = 0
+    model_aggregation = {}
+    
+    try:
+        # Stream the cost log (up to 10000 entries to prevent memory overflow)
+        cost_docs = db.collection("cost_log").order_by("timestamp", direction=firestore.Query.DESCENDING).limit(10000).stream()
+        for doc in cost_docs:
+            data = doc.to_dict()
+            model = data.get("model_name", "unknown-model")
+            in_tokens = data.get("input_tokens", 0)
+            out_tokens = data.get("output_tokens", 0)
+            
+            total_input_tokens += in_tokens
+            total_output_tokens += out_tokens
+            
+            if model not in model_aggregation:
+                model_aggregation[model] = {
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "total_calls": 0,
+                    "cost_usd": 0.0
+                }
+            
+            model_aggregation[model]["input_tokens"] += in_tokens
+            model_aggregation[model]["output_tokens"] += out_tokens
+            model_aggregation[model]["total_calls"] += 1
+            
+        # Compute cost for each model
+        # Gemini 2.5 Flash pricing: $0.075 / 1M input, $0.30 / 1M output
+        total_expenditure_usd = 0.0
+        for model, stats in model_aggregation.items():
+            input_rate = 0.075 / 1_000_000
+            output_rate = 0.30 / 1_000_000
+            
+            model_cost = (stats["input_tokens"] * input_rate) + (stats["output_tokens"] * output_rate)
+            stats["cost_usd"] = round(model_cost, 6)
+            total_expenditure_usd += model_cost
+            
+        return {
+            "total_input_tokens": total_input_tokens,
+            "total_output_tokens": total_output_tokens,
+            "total_calls": sum(stats["total_calls"] for stats in model_aggregation.values()),
+            "total_expenditure_usd": round(total_expenditure_usd, 6),
+            "model_breakdown": model_aggregation
+        }
+    except Exception as e:
+        logger.error(f"Error fetching cost log stats: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch cost statistics: {str(e)}")
