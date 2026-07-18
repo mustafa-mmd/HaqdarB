@@ -98,7 +98,7 @@ def get_usage_stats(uid: str) -> dict:
         }
 
 
-def check_and_increment_usage(uid: str, feature: str) -> tuple[bool, str]:
+def check_and_increment_usage(uid: str, feature: str, email: str = None) -> tuple[bool, str]:
     """
     Check if user is within quota, then increment usage counter.
     Returns (allowed: bool, message: str).
@@ -110,14 +110,20 @@ def check_and_increment_usage(uid: str, feature: str) -> tuple[bool, str]:
         # ENSURE TOP-LEVEL USER DOC EXISTS (for Admin Dashboard)
         user_ref = db.collection("users").document(uid)
         if not user_ref.get().exists:
-            user_ref.set({
+            set_data = {
                 "uid": uid,
                 "createdAt": firestore.SERVER_TIMESTAMP,
                 "lastActive": firestore.SERVER_TIMESTAMP,
                 "plan": "free"
-            }, merge=True)
+            }
+            if email:
+                set_data["email"] = email
+            user_ref.set(set_data, merge=True)
         else:
-            user_ref.update({"lastActive": firestore.SERVER_TIMESTAMP})
+            update_data = {"lastActive": firestore.SERVER_TIMESTAMP}
+            if email:
+                update_data["email"] = email
+            user_ref.update(update_data)
 
         plan = get_user_plan(uid)
         limits = PLAN_LIMITS.get(plan, PLAN_LIMITS["free"])

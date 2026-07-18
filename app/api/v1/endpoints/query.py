@@ -230,7 +230,7 @@ async def legal_query(query_data: QueryRequest, request: Request):
     uid = user_info["uid"]
 
     # ── Quota check ──
-    allowed, msg = check_and_increment_usage(uid, "query")
+    allowed, msg = check_and_increment_usage(uid, "query", user_info.get("email"))
     if not allowed:
         raise HTTPException(status_code=429, detail=msg)
 
@@ -297,7 +297,7 @@ async def legal_query_stream(request: QueryRequest):
         raise HTTPException(status_code=401, detail="Invalid or expired token")
     uid = user_info["uid"]
 
-    allowed, msg = check_and_increment_usage(uid, "query")
+    allowed, msg = check_and_increment_usage(uid, "query", user_info.get("email"))
     if not allowed:
         raise HTTPException(status_code=429, detail=msg)
 
@@ -373,7 +373,7 @@ async def case_analyze(request: CaseAnalyzeRequest):
         raise HTTPException(status_code=401, detail="Invalid or expired token")
     uid = user_info["uid"]
 
-    allowed, msg = check_and_increment_usage(uid, "query")
+    allowed, msg = check_and_increment_usage(uid, "query", user_info.get("email"))
     if not allowed:
         raise HTTPException(status_code=429, detail=msg)
 
@@ -402,7 +402,7 @@ async def universal_draft(query_data: QueryRequest, request: Request):
         raise HTTPException(status_code=401, detail="Invalid or expired token")
     uid = user_info["uid"]
 
-    allowed, msg = check_and_increment_usage(uid, "draft")
+    allowed, msg = check_and_increment_usage(uid, "draft", user_info.get("email"))
     if not allowed:
         raise HTTPException(status_code=429, detail=msg)
 
@@ -459,7 +459,7 @@ async def draft_from_template(request: TemplateRequest):
         raise HTTPException(status_code=401, detail="Invalid or expired token")
     uid = user_info["uid"]
 
-    allowed, msg = check_and_increment_usage(uid, "draft")
+    allowed, msg = check_and_increment_usage(uid, "draft", user_info.get("email"))
     if not allowed:
         raise HTTPException(status_code=429, detail=msg)
 
@@ -523,7 +523,7 @@ async def peca_query(request: QueryRequest):
         raise HTTPException(status_code=401, detail="Invalid or expired token")
     uid = user_info["uid"]
 
-    allowed, msg = check_and_increment_usage(uid, "query")
+    allowed, msg = check_and_increment_usage(uid, "query", user_info.get("email"))
     if not allowed:
         raise HTTPException(status_code=429, detail=msg)
 
@@ -547,7 +547,7 @@ async def draft_complaint(request: DraftRequest):
         raise HTTPException(status_code=401, detail="Invalid or expired token")
     uid = user_info["uid"]
 
-    allowed, msg = check_and_increment_usage(uid, "draft")
+    allowed, msg = check_and_increment_usage(uid, "draft", user_info.get("email"))
     if not allowed:
         raise HTTPException(status_code=429, detail=msg)
 

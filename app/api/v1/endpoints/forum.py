@@ -3,18 +3,12 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 from google.cloud import firestore
 from typing import List, Optional
-from app.core.firebase import verify_token
+from app.core.firebase import verify_token, get_db
 import datetime
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-_db = None
-def get_db():
-    global _db
-    if _db is None:
-        _db = firestore.Client()
-    return _db
 
 
 # ════════════════════════════════════════════════════════════════════════════════

@@ -41,7 +41,7 @@ def _get_db():
     return _db
 
 
-# ── Lazy Gemini client (reuse existing key) ──
+# ── Lazy Gemini client — respects USE_VERTEX_AI setting ──
 _gemini_client = None
 
 
@@ -49,16 +49,27 @@ def _get_gemini():
     global _gemini_client
     if _gemini_client is None:
         from google import genai
-        _gemini_client = genai.Client(api_key=settings.GEMINI_API_KEY)
+        if settings.USE_VERTEX_AI:
+            logger.info("Study: Initializing Gemini Client using Vertex AI...")
+            _gemini_client = genai.Client(
+                vertexai=True,
+                project=settings.PROJECT_ID,
+                location=settings.LOCATION
+            )
+        else:
+            logger.info("Study: Initializing Gemini Client using Google AI Studio...")
+            _gemini_client = genai.Client(api_key=settings.GEMINI_API_KEY)
     return _gemini_client
 
 
-def _call_gemini(prompt: str, temperature: float = 0.3, json_mode: bool = False) -> str:
-    """Lightweight Gemini call — returns raw text."""
-    from google.genai.types import GenerateContentConfig
+def _call_gemini(prompt: str, temperature: float = 0.3, json_mode: bool = False, use_search: bool = False) -> str:
+    """Lightweight Gemini call — returns raw text, supports optional Google Search grounding."""
+    from google.genai.types import GenerateContentConfig, Tool, GoogleSearch
     config_kwargs = {"temperature": temperature}
     if json_mode:
         config_kwargs["response_mime_type"] = "application/json"
+    if use_search:
+        config_kwargs["tools"] = [Tool(google_search=GoogleSearch())]
     try:
         response = _get_gemini().models.generate_content(
             model=settings.GEMINI_FLASH_MODEL,
@@ -90,6 +101,18 @@ class NotesRequest(BaseModel):
     context: Optional[str] = Field(default=None, max_length=3000)
     language: str = "en"
     download: bool = False
+    # Pro-level customisation fields
+    length: str = Field(default="medium", pattern="^(short|medium|long|comprehensive)$")
+    case_citations: bool = False
+    section_breakdown: bool = True
+    qa_prep: bool = False
+    custom_directives: Optional[str] = Field(default=None, max_length=2000)
+
+
+class NotesDownloadRequest(BaseModel):
+    token: str
+    topic: str = Field(..., min_length=3, max_length=500)
+    content: str = Field(..., min_length=10)  # The already-rendered markdown text
 
 
 class FlashcardsRequest(BaseModel):
@@ -110,7 +133,7 @@ class FlashcardReviewRequest(BaseModel):
 class QuizGenerateRequest(BaseModel):
     token: str
     topic: str = Field(..., min_length=3, max_length=500)
-    count: int = Field(default=5, ge=3, le=15)
+    count: int = Field(default=5, ge=3, le=20)
     difficulty: str = "standard"
     language: str = "en"
 
@@ -273,7 +296,7 @@ async def generate_notes(request: NotesRequest):
 
     # Fetch relevant law context from Qdrant
     try:
-        matches = search_similar_laws(request.topic, neighbor_count=4)
+        matches = search_similar_laws(request.topic, neighbor_count=6)
         law_context = "\n\n".join(m["text"] for m in matches if m.get("text"))
     except Exception:
         law_context = request.context or ""
@@ -281,26 +304,72 @@ async def generate_notes(request: NotesRequest):
     extra_context = request.context or ""
     combined_context = f"{law_context}\n\n{extra_context}".strip()
 
-    prompt = f"""You are HaqDar AI Study — a premium legal education tool for Pakistani law students.
+    # ── Derive target length & depth from user selection ──
+    length_config = {
+        "short":         {"word_target": 600,  "sections": 4,  "depth": "concise summary suitable for quick revision"},
+        "medium":        {"word_target": 1800, "sections": 7,  "depth": "solid academic guide covering all core concepts with examples"},
+        "long":          {"word_target": 3500, "sections": 12, "depth": "in-depth study kit with extensive analysis, sub-sections, and worked examples"},
+        "comprehensive": {"word_target": 6000, "sections": 18, "depth": "exhaustive course-booklet level treatment with full statutory analysis, academic commentary, and practice scenarios"},
+    }
+    cfg = length_config.get(request.length, length_config["medium"])
 
-Generate comprehensive, structured study notes on the following topic.
+    # ── Build optional special-section directives ──
+    special_sections = []
+    if request.section_breakdown:
+        special_sections.append(
+            "## Statutory Framework\nFor every relevant Act, list: Act Name | Year | Relevant Sections | Key Provision Summary in a structured table or numbered list."
+        )
+    if request.case_citations:
+        special_sections.append(
+            "## Landmark Case Law & Judicial Precedents\nInclude at least 5 landmark cases (Pakistani superior courts preferred). For each: Case Name, Citation/Year, Court, Key Ratio Decidendi, Impact on current law."
+        )
+    if request.qa_prep:
+        special_sections.append(
+            "## Mock Exam Q&A Scenarios\nGenerate 6-10 exam-style questions (mix of short-answer, scenario-based, and essay) with detailed model answers or answer outlines. Cover both theoretical and applied questions."
+        )
+
+    special_block = "\n\n".join(special_sections)
+    custom_block = f"\nSPECIAL STUDENT DIRECTIVES (highest priority — follow exactly):\n{request.custom_directives}" if request.custom_directives else ""
+
+    prompt = f"""You are HaqDar AI Study — the most advanced legal education AI for Pakistani law students, built to the standard of GPT-4 and Claude.
+
+Your task is to generate PREMIUM, DEEPLY COMPREHENSIVE study notes. This is NOT a casual summary — this must be a professional-grade academic resource.
 
 TOPIC: {request.topic}
+TARGET LENGTH: approximately {cfg['word_target']} words across {cfg['sections']} major sections
+DEPTH REQUIREMENT: {cfg['depth']}
 
-RELEVANT LAW SECTIONS:
-{combined_context if combined_context else "(Use your training knowledge on Pakistani law)"}
+RELEVANT LEGAL CONTEXT FROM HAQDAR DATABASE:
+{combined_context if combined_context else "(Draw from your extensive knowledge of Pakistani statute law, case law, and legal doctrine)"}
+{custom_block}
 
-INSTRUCTIONS:
-- Structure using ## headings for major sections
-- Include: Definition, Relevant Laws (act name + section), Key Principles, Practical Examples, Common Exam Points
-- Be factually grounded in Pakistani law
+MANDATORY STRUCTURAL FORMAT:
+Use ## for major section headings and ### for sub-headings. Every major section must be substantive — avoid one-liner sections.
+
+CORE SECTIONS TO ALWAYS INCLUDE:
+1. ## Introduction & Definition — precise legal definition, historical background, constitutional grounding
+2. ## Governing Legislation — all relevant Acts with year, jurisdiction, and section numbers
+3. ## Core Legal Principles — enumerate every doctrine, element, and rule
+4. ## Detailed Exposition — thorough analysis of each principle with sub-sections
+5. ## Practical Examples & Illustrations — concrete real-world or hypothetical Pakistan-specific scenarios
+6. ## Common Exam Pitfalls & Examiner Tips
+7. ## Quick Revision Summary — 5-8 bullet-point condensed overview
+{special_block}
+
+QUALITY REQUIREMENTS:
+- Every claim must be grounded in Pakistani statute or case law
+- Use precise legal terminology; do not oversimplify
+- Cite act names and section numbers wherever applicable (e.g., "Section 302 PPC", "Order VII Rule 11 CPC")
+- Use bold (**text**) for key legal terms on first use
+- Use bullet lists for lists of 3 or more items
+- Maintain academic register throughout
 - {_lang_directive(request.language)}
-- End with a "Quick Summary" section (3 bullet points)
-- Do NOT add a disclaimer at the end (it will be added automatically)
+- Do NOT add a disclaimer (added automatically)
+- Do NOT truncate — produce the FULL target length
 
-Generate the notes now:"""
+Begin generating the complete notes now:"""
 
-    notes_md = _call_gemini(prompt, temperature=0.2)
+    notes_md = _call_gemini(prompt, temperature=0.3, use_search=not law_context)
 
     # Persist to Firestore
     try:
@@ -310,6 +379,7 @@ Generate the notes now:"""
             "topic": request.topic,
             "notes": notes_md,
             "language": request.language,
+            "length": request.length,
             "createdAt": firestore.SERVER_TIMESTAMP,
         })
         note_id = doc_ref[1].id
@@ -317,7 +387,7 @@ Generate the notes now:"""
         logger.error(f"Notes persist failed: {e}")
         note_id = None
 
-    log_audit_event(uid, "notes_generated", {"topic": request.topic})
+    log_audit_event(uid, "notes_generated", {"topic": request.topic, "length": request.length})
 
     if request.download:
         buf = _make_docx(f"Study Notes: {request.topic}", notes_md)
@@ -331,6 +401,59 @@ Generate the notes now:"""
     return {"note_id": note_id, "topic": request.topic, "notes": notes_md, "language": request.language}
 
 
+@router.get("/notes")
+async def get_existing_notes(token: str, topic: str):
+    """Retrieve the most recently generated study notes for a topic if they exist."""
+    user_info = _require_auth(token)
+    uid = user_info["uid"]
+    db = _get_db()
+    
+    try:
+        docs = db.collection("student_notes") \
+                 .where("uid", "==", uid) \
+                 .where("topic", "==", topic) \
+                 .stream()
+                 
+        notes_list = []
+        for doc in docs:
+            d = doc.to_dict()
+            d["id"] = doc.id
+            created_at = d.get("createdAt")
+            if created_at:
+                d["createdAt_dt"] = created_at
+            else:
+                d["createdAt_dt"] = datetime.min.replace(tzinfo=timezone.utc)
+            notes_list.append(d)
+            
+        if notes_list:
+            notes_list.sort(key=lambda x: x.get("createdAt_dt"), reverse=True)
+            latest = notes_list[0]
+            return {
+                "exists": True,
+                "note_id": latest["id"],
+                "topic": latest["topic"],
+                "notes": latest["notes"],
+                "language": latest.get("language", "en")
+            }
+    except Exception as e:
+        logger.error(f"Failed to fetch existing notes: {e}")
+        
+    return {"exists": False, "notes": None}
+
+
+@router.post("/notes/download")
+async def download_notes_as_docx(request: NotesDownloadRequest):
+    """Convert already-generated markdown notes to a styled .docx file. Does NOT call Gemini."""
+    _require_auth(request.token)
+    buf = _make_docx(f"Study Notes: {request.topic}", request.content)
+    safe_name = request.topic[:40].replace(" ", "_").replace("/", "-")
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": f"attachment; filename=HaqDar_Notes_{safe_name}.docx"},
+    )
+
+
 # ════════════════════════════════════════════════════════════════════════════════
 # 3. FLASHCARD GENERATOR
 # ════════════════════════════════════════════════════════════════════════════════
@@ -341,7 +464,7 @@ async def generate_flashcards(request: FlashcardsRequest):
     user_info = _require_auth(request.token)
     uid = user_info["uid"]
 
-    cache_key = f"{uid}:{request.topic}:{request.difficulty}:{request.count}"
+    cache_key = f"{uid}:{request.topic}:{request.difficulty}:{request.count}:{request.language}"
     if cache_key in _flashcard_cache:
         return _flashcard_cache[cache_key]
 
@@ -372,7 +495,7 @@ Generate a JSON array of flashcard objects. Each object must have:
 
 Return ONLY the JSON array. No markdown fences. No commentary."""
 
-    raw = _call_gemini(prompt, temperature=0.25, json_mode=True)
+    raw = _call_gemini(prompt, temperature=0.25, json_mode=True, use_search=not law_context)
     try:
         cards = json.loads(raw)
         if not isinstance(cards, list):
@@ -457,7 +580,7 @@ Rules:
 - {_lang_directive(request.language)}
 - Return ONLY the JSON object. No markdown fences."""
 
-    raw = _call_gemini(prompt, temperature=0.3, json_mode=True)
+    raw = _call_gemini(prompt, temperature=0.3, json_mode=True, use_search=not law_context)
     try:
         quiz = json.loads(raw)
         if "questions" not in quiz:
@@ -544,6 +667,9 @@ async def submit_quiz(request: QuizSubmitRequest):
             "results": results,
             "submittedAt": firestore.SERVER_TIMESTAMP,
         })
+        # Immediately invalidate progress cache so stats update on next load
+        if uid in _progress_cache:
+            del _progress_cache[uid]
     except Exception as e:
         logger.error(f"Quiz attempt persist failed: {e}")
 
@@ -602,7 +728,7 @@ Scoring guide: 80-100 Distinction, 60-79 Merit, 40-59 Pass, 0-39 Fail.
 {_lang_directive(request.language)}
 Return ONLY the JSON object. No markdown fences."""
 
-    raw = _call_gemini(prompt, temperature=0.2, json_mode=True)
+    raw = _call_gemini(prompt, temperature=0.2, json_mode=True, use_search=not law_context)
     try:
         result = json.loads(raw)
     except Exception:
@@ -641,16 +767,25 @@ async def get_progress(token: str):
 
     db = _get_db()
 
-    # Fetch quiz attempts
+    # Fetch quiz attempts — use where-only (no order_by) to avoid requiring a composite Firestore index.
+    # Sort is done in Python after fetch.
     try:
-        attempts_query = (
+        attempts_raw = (
             db.collection("quiz_attempts")
             .where("uid", "==", uid)
-            .order_by("submittedAt", direction=firestore.Query.DESCENDING)
             .limit(50)
             .stream()
         )
-        attempts = [a.to_dict() for a in attempts_query]
+        attempts = [a.to_dict() for a in attempts_raw]
+        # Sort newest-first in Python
+        def _ts_sort_key(a):
+            ts = a.get("submittedAt")
+            if ts is None:
+                return 0
+            if hasattr(ts, "timestamp"):
+                return ts.timestamp()
+            return float(ts)
+        attempts.sort(key=_ts_sort_key, reverse=True)
     except Exception as e:
         logger.error(f"Progress fetch failed: {e}")
         attempts = []
@@ -713,7 +848,7 @@ async def get_progress(token: str):
         "badge": (
             "⭐ Law Scholar" if avg_score_overall >= 80 else
             "📚 Dedicated Learner" if avg_score_overall >= 60 else
-            "🌱 Rising Advocate" if total_quizzes > 0 else
+            "Rising Advocate" if total_quizzes > 0 else
             "🎓 Just Starting"
         ),
     }
@@ -731,9 +866,19 @@ async def generate_mindmap(request: MindMapRequest):
     user_info = _require_auth(request.token)
     uid = user_info["uid"]
 
+    # Fetch relevant law context from Qdrant
+    try:
+        matches = search_similar_laws(request.concept, neighbor_count=3)
+        law_context = "\n\n".join(m["text"] for m in matches if m.get("text"))
+    except Exception:
+        law_context = ""
+
     prompt = f"""You are HaqDar AI Study generating a Mermaid.js mind map for a Pakistani law student.
 
 LEGAL CONCEPT: {request.concept}
+
+RELEVANT LAW:
+{law_context if law_context else "(Use your knowledge of Pakistani law)"}
 
 Generate a Mermaid mind map diagram using the `mindmap` syntax.
 Rules:
@@ -756,7 +901,7 @@ mindmap
 
 Generate the mind map now:"""
 
-    mermaid_code = _call_gemini(prompt, temperature=0.2)
+    mermaid_code = _call_gemini(prompt, temperature=0.2, use_search=not law_context)
 
     # Clean up any accidental markdown fences
     mermaid_code = mermaid_code.strip()
@@ -807,7 +952,7 @@ Use your knowledge of Pakistani case law. If the exact case is unknown, generate
 {_lang_directive(request.language)}
 Return ONLY the JSON object. No markdown fences."""
 
-    raw = _call_gemini(prompt, temperature=0.2, json_mode=True)
+    raw = _call_gemini(prompt, temperature=0.2, json_mode=True, use_search=True)
     try:
         brief = json.loads(raw)
     except Exception:
@@ -843,6 +988,33 @@ class TutorRequest(BaseModel):
     language: str = "en"
 
 
+def _get_tutor_session_id(uid: str, topic: str) -> str:
+    """Create a deterministic, safe Firestore document ID from uid and topic."""
+    import hashlib
+    topic_hash = hashlib.md5(topic.strip().lower().encode("utf-8")).hexdigest()[:12]
+    safe_topic = "".join(c for c in topic if c.isalnum())[:30].lower()
+    return f"{uid}_{safe_topic}_{topic_hash}"
+
+
+@router.get("/tutor")
+async def get_tutor_session(token: str, topic: str):
+    """Retrieve existing tutor session message history."""
+    user_info = _require_auth(token)
+    uid = user_info["uid"]
+    db = _get_db()
+    
+    session_id = _get_tutor_session_id(uid, topic)
+    try:
+        doc = db.collection("tutor_sessions").document(session_id).get()
+        if doc.exists:
+            d = doc.to_dict()
+            return {"messages": d.get("messages", [])}
+    except Exception as e:
+        logger.error(f"Failed to fetch tutor session: {e}")
+        
+    return {"messages": []}
+
+
 @router.post("/tutor")
 async def socratic_tutor(request: TutorRequest):
     """
@@ -863,8 +1035,21 @@ async def socratic_tutor(request: TutorRequest):
     except Exception:
         law_context = ""
 
+    db = _get_db()
+    session_id = _get_tutor_session_id(uid, request.topic)
+    
+    # Load history from Firestore session to maintain active state across page exits
+    history_messages = []
+    try:
+        session_doc = db.collection("tutor_sessions").document(session_id).get()
+        if session_doc.exists:
+            history_messages = session_doc.to_dict().get("messages", [])
+    except Exception as e:
+        logger.error(f"Error loading existing tutor session: {e}")
+
     # Build Socratic Tutor system instruction
-    system_instruction = f"""You are HaqDar AI Socratic Tutor — a highly encouraging and wise legal tutor for Pakistani law.
+    system_instruction = f"""You are HaqDar AI Tutor — a highly encouraging and wise legal tutor for Pakistani law.
+You were created by the HaqDar team and are powered by Google Gemini.
 Your target topic is: {scrubbed_topic}
 Difficulty: {request.difficulty} — {_difficulty_instruction(request.difficulty)}
 
@@ -882,9 +1067,8 @@ Difficulty: {request.difficulty} — {_difficulty_instruction(request.difficulty
     # Build contents from history
     from google.genai.types import Content, Part
     contents = []
-    for msg in request.conversation_history:
+    for msg in history_messages:
         role = "user" if msg.get("role") == "user" else "model"
-        # Scrub PII from conversation history
         scrubbed_msg_content = scrub_pii(msg.get("content", ""))
         contents.append(Content(role=role, parts=[Part(text=scrubbed_msg_content)]))
     
@@ -894,20 +1078,45 @@ Difficulty: {request.difficulty} — {_difficulty_instruction(request.difficulty
     contents.append(Content(role="user", parts=[Part(text=scrubbed_message)]))
 
     # Call Gemini
-    from google.genai.types import GenerateContentConfig
+    from google.genai.types import GenerateContentConfig, Tool, GoogleSearch
+    config_kwargs = {
+        "system_instruction": system_instruction,
+        "temperature": 0.4
+    }
+    if not law_context:
+        config_kwargs["tools"] = [Tool(google_search=GoogleSearch())]
+
     try:
         response = _get_gemini().models.generate_content(
             model=settings.GEMINI_FLASH_MODEL,
             contents=contents,
-            config=GenerateContentConfig(
-                system_instruction=system_instruction,
-                temperature=0.4
-            )
+            config=GenerateContentConfig(**config_kwargs)
         )
         tutor_response = response.text.strip() if response.text else ""
     except Exception as e:
         logger.error(f"Tutor Gemini call failed: {e}")
         raise HTTPException(status_code=502, detail=f"Tutor AI failed: {str(e)}")
+
+    # Update Firestore session with the new messages
+    updated_messages = list(history_messages)
+    
+    # Avoid saving raw welcome instruction prompt as a user message in history
+    is_init = "Hello, I'm ready to learn about" in request.message
+    if not is_init:
+        updated_messages.append({"role": "user", "content": request.message})
+    updated_messages.append({"role": "assistant", "content": tutor_response})
+
+    try:
+        db.collection("tutor_sessions").document(session_id).set({
+            "uid": uid,
+            "topic": request.topic,
+            "difficulty": request.difficulty,
+            "language": request.language,
+            "messages": updated_messages,
+            "updatedAt": firestore.SERVER_TIMESTAMP
+        }, merge=True)
+    except Exception as e:
+        logger.error(f"Failed to persist tutor session: {e}")
 
     log_audit_event(uid, "study_tutor_interact", {"topic": scrubbed_topic})
     return {"response": tutor_response}
@@ -957,4 +1166,206 @@ async def review_flashcard(request: FlashcardReviewRequest):
     except Exception as e:
         logger.error(f"Failed to update Leitner state: {e}")
         raise HTTPException(status_code=500, detail="Failed to update flashcard review progress")
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# 11. GET & DELETE HISTORY
+# ════════════════════════════════════════════════════════════════════════════════
+
+class DeleteHistoryRequest(BaseModel):
+    token: str
+    all: bool = False
+    activity_type: Optional[str] = None  # "notes", "quiz", "flashcards", "case_brief", "comparison"
+    activity_id: Optional[str] = None
+
+
+@router.get("/history")
+async def get_study_history(token: str):
+    """Retrieve all study history/activities of the authenticated user."""
+    user_info = _require_auth(token)
+    uid = user_info["uid"]
+    db = _get_db()
+    
+    history_items = []
+    
+    def _ts(doc_dict, field):
+        ts = doc_dict.get(field)
+        if ts is None:
+            return ""
+        if hasattr(ts, "isoformat"):
+            return ts.isoformat()
+        return str(ts)
+
+    try:
+        # Notes — where-only, no order_by (avoids missing composite index)
+        for doc in db.collection("student_notes").where("uid", "==", uid).limit(20).stream():
+            d = doc.to_dict()
+            history_items.append({
+                "id": doc.id, "type": "notes",
+                "topic": d.get("topic"),
+                "date": _ts(d, "createdAt"),
+                "language": d.get("language", "en")
+            })
+
+        # Quiz Attempts — where-only
+        for doc in db.collection("quiz_attempts").where("uid", "==", uid).limit(20).stream():
+            d = doc.to_dict()
+            history_items.append({
+                "id": doc.id, "type": "quiz",
+                "topic": d.get("topic"),
+                "score": d.get("score"),
+                "correct": d.get("correct"),
+                "total": d.get("total"),
+                "date": _ts(d, "submittedAt")
+            })
+
+        # Flashcards — where-only
+        for doc in db.collection("flashcards").where("uid", "==", uid).limit(20).stream():
+            d = doc.to_dict()
+            history_items.append({
+                "id": doc.id, "type": "flashcards",
+                "topic": d.get("topic"),
+                "difficulty": d.get("difficulty"),
+                "date": _ts(d, "createdAt")
+            })
+
+        # Case Briefs — where-only
+        for doc in db.collection("case_briefs").where("uid", "==", uid).limit(20).stream():
+            d = doc.to_dict()
+            history_items.append({
+                "id": doc.id, "type": "case_brief",
+                "topic": d.get("citation"),
+                "date": _ts(d, "createdAt")
+            })
+
+        # Comparisons — where-only
+        for doc in db.collection("comparison_attempts").where("uid", "==", uid).limit(20).stream():
+            d = doc.to_dict()
+            history_items.append({
+                "id": doc.id, "type": "comparison",
+                "topic": (d.get("question") or "")[:100] + "...",
+                "score": d.get("score"),
+                "grade": d.get("grade"),
+                "date": _ts(d, "createdAt")
+            })
+
+        # Tutor Sessions — where-only
+        for doc in db.collection("tutor_sessions").where("uid", "==", uid).limit(20).stream():
+            d = doc.to_dict()
+            history_items.append({
+                "id": doc.id, "type": "tutor",
+                "topic": d.get("topic"),
+                "date": _ts(d, "updatedAt")
+            })
+            
+    except Exception as e:
+        logger.error(f"Failed to fetch study history: {e}")
+        try:
+            history_items = []
+            for col, t, dt_fld in [("student_notes", "notes", "createdAt"), 
+                                   ("quiz_attempts", "quiz", "submittedAt"), 
+                                   ("flashcards", "flashcards", "createdAt"), 
+                                   ("case_briefs", "case_brief", "createdAt"), 
+                                   ("comparison_attempts", "comparison", "createdAt"),
+                                   ("tutor_sessions", "tutor", "updatedAt")]:
+                docs = db.collection(col).where("uid", "==", uid).limit(20).stream()
+                for doc in docs:
+                    d = doc.to_dict()
+                    item = {
+                        "id": doc.id,
+                        "type": t,
+                        "date": _ts(d, dt_fld)
+                    }
+                    if t == "notes":
+                        item["topic"] = d.get("topic")
+                    elif t == "quiz":
+                        item["topic"] = d.get("topic")
+                        item["score"] = d.get("score")
+                        item["correct"] = d.get("correct")
+                        item["total"] = d.get("total")
+                    elif t == "flashcards":
+                        item["topic"] = d.get("topic")
+                        item["difficulty"] = d.get("difficulty")
+                    elif t == "case_brief":
+                        item["topic"] = d.get("citation")
+                    elif t == "comparison":
+                        item["topic"] = d.get("question")[:100] + "..." if d.get("question") else ""
+                        item["score"] = d.get("score")
+                        item["grade"] = d.get("grade")
+                    elif t == "tutor":
+                        item["topic"] = d.get("topic")
+                    history_items.append(item)
+        except Exception as e2:
+            logger.error(f"Fallback history fetch failed: {e2}")
+            raise HTTPException(status_code=500, detail="Failed to fetch history")
+
+    history_items.sort(key=lambda x: x["date"] or "", reverse=True)
+    return history_items
+
+
+@router.delete("/history")
+async def delete_study_history(request: DeleteHistoryRequest):
+    """Delete all or specific study history records of the user."""
+    user_info = _require_auth(request.token)
+    uid = user_info["uid"]
+    db = _get_db()
+    
+    try:
+        if request.all:
+            collections = ["student_notes", "quiz_attempts", "flashcards", "case_briefs", "comparison_attempts", "tutor_sessions"]
+            for col in collections:
+                docs = db.collection(col).where("uid", "==", uid).stream()
+                batch = db.batch()
+                count = 0
+                for doc in docs:
+                    batch.delete(doc.reference)
+                    count += 1
+                    if count >= 450:
+                        batch.commit()
+                        batch = db.batch()
+                        count = 0
+                if count > 0:
+                     batch.commit()
+            
+            if uid in _progress_cache:
+                del _progress_cache[uid]
+                
+            return {"success": True, "message": "All history deleted"}
+            
+        else:
+            if not request.activity_type or not request.activity_id:
+                raise HTTPException(status_code=400, detail="Must specify activity_type and activity_id if not deleting all")
+            
+            mapping = {
+                "notes": "student_notes",
+                "quiz": "quiz_attempts",
+                "flashcards": "flashcards",
+                "case_brief": "case_briefs",
+                "comparison": "comparison_attempts",
+                "tutor": "tutor_sessions"
+            }
+            col_name = mapping.get(request.activity_type)
+            if not col_name:
+                raise HTTPException(status_code=400, detail="Invalid activity type")
+                
+            doc_ref = db.collection(col_name).document(request.activity_id)
+            doc = doc_ref.get()
+            if not doc.exists:
+                raise HTTPException(status_code=404, detail="Activity record not found")
+                
+            if doc.to_dict().get("uid") != uid:
+                raise HTTPException(status_code=403, detail="Record does not belong to user")
+                
+            doc_ref.delete()
+            
+            if uid in _progress_cache:
+                del _progress_cache[uid]
+                
+            return {"success": True, "message": f"Deleted {request.activity_type} activity record"}
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to delete history: {e}")
+        raise HTTPException(status_code=500, detail="Failed to delete history")
 

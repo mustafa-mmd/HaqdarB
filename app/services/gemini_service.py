@@ -18,8 +18,17 @@ from app.middleware.pii_scrubber import scrub_pii
 logger = logging.getLogger(__name__)
 load_dotenv()
 
-# ── Initialize Gemini Client (AI Studio Free Tier) ──
-client = genai.Client(api_key=settings.GEMINI_API_KEY)
+# ── Initialize Gemini Client (AI Studio or Vertex AI) ──
+if settings.USE_VERTEX_AI:
+    logger.info("Initializing Gemini Client using Vertex AI...")
+    client = genai.Client(
+        vertexai=True,
+        project=settings.PROJECT_ID,
+        location=settings.LOCATION
+    )
+else:
+    logger.info("Initializing Gemini Client using Google AI Studio...")
+    client = genai.Client(api_key=settings.GEMINI_API_KEY)
 
 # ════════════════════════════════════════════════════════════════════════════════
 # SYSTEM INSTRUCTIONS

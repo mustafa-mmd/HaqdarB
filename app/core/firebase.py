@@ -74,3 +74,20 @@ def set_admin_claim(uid: str) -> bool:
     except Exception as e:
         logger.error(f"Failed to set admin claim for {uid}: {e}")
         return False
+
+
+_db = None
+
+
+def get_db():
+    """Get the Firestore client configured with Firebase credentials."""
+    global _db
+    if _db is None:
+        try:
+            from firebase_admin import firestore
+            _db = firestore.client()
+            logger.info("✅ Firestore client initialized via Firebase Admin SDK")
+        except Exception as e:
+            logger.error(f"❌ Firestore client initialization failed: {e}")
+            raise
+    return _db

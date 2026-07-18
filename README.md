@@ -210,34 +210,33 @@ VITE_API_URL=http://localhost:8000/api/v1
 
 ### Endpoints
 
-| Method | Endpoint                 | Description                  | Auth     |
-| ------ | ------------------------ | ---------------------------- | -------- |
-| GET    | `/health`                | System health check          | None     |
-| POST   | `/query`                 | AI legal Q&A with RAG        | Required |
-| POST   | `/case-analyze`          | Case strength analysis       | Required |
-| POST   | `/draft-legal`           | Universal document drafting  | Required |
-| POST   | `/draft-template`        | Template-based document gen  | Required |
-| GET    | `/templates`             | List available templates     | None     |
-| POST   | `/document`              | Upload document for analysis | Required |
-| POST   | `/peca`                  | Cybercrime/PECA specialist   | Required |
-| POST   | `/draft`                 | Complaint letter (Word)      | Required |
-| POST   | `/transcribe`            | Speech-to-text               | Optional |
-| GET    | `/referral`              | Legal aid by city            | None     |
-| GET    | `/referral/autocomplete` | City autocomplete            | None     |
-| GET    | `/user/profile`          | Get user profile + usage     | Required |
-| POST   | `/user/profile`          | Update user profile          | Required |
-| GET    | `/news`                  | Legal news feed              | Optional |
-| POST   | `/study/difficulty`      | Set difficulty preference     | Required |
-| POST   | `/study/notes`           | Study notes + DOCX download   | Required |
-| POST   | `/study/flashcards`      | Leitner flashcards generator  | Required |
-| POST   | `/study/quiz/generate`   | MCQ quiz generator            | Required |
-| POST   | `/study/quiz/submit`     | Submit MCQ quiz for grading   | Required |
+| Method | Endpoint                 | Description                     | Auth     |
+| ------ | ------------------------ | ------------------------------- | -------- |
+| GET    | `/health`                | System health check             | None     |
+| POST   | `/query`                 | AI legal Q&A with RAG           | Required |
+| POST   | `/case-analyze`          | Case strength analysis          | Required |
+| POST   | `/draft-legal`           | Universal document drafting     | Required |
+| POST   | `/draft-template`        | Template-based document gen     | Required |
+| GET    | `/templates`             | List available templates        | None     |
+| POST   | `/document`              | Upload document for analysis    | Required |
+| POST   | `/peca`                  | Cybercrime/PECA specialist      | Required |
+| POST   | `/draft`                 | Complaint letter (Word)         | Required |
+| POST   | `/transcribe`            | Speech-to-text                  | Optional |
+| GET    | `/referral`              | Legal aid by city               | None     |
+| GET    | `/referral/autocomplete` | City autocomplete               | None     |
+| GET    | `/user/profile`          | Get user profile + usage        | Required |
+| POST   | `/user/profile`          | Update user profile             | Required |
+| GET    | `/news`                  | Legal news feed                 | Optional |
+| POST   | `/study/difficulty`      | Set difficulty preference       | Required |
+| POST   | `/study/notes`           | Study notes + DOCX download     | Required |
+| POST   | `/study/flashcards`      | Leitner flashcards generator    | Required |
+| POST   | `/study/quiz/generate`   | MCQ quiz generator              | Required |
+| POST   | `/study/quiz/submit`     | Submit MCQ quiz for grading     | Required |
 | POST   | `/study/compare`         | Compare written answer to ideal | Required |
 | GET    | `/study/progress`        | Subject mastery, streaks & recs | Required |
-| POST   | `/study/mindmap`         | Mermaid.js mind map generator | Required |
-| POST   | `/study/case-brief`      | Legal case brief generator   | Required |
-| POST   | `/study/tutor`           | Socratic AI Tutor session     | Required |
-
+| POST   | `/study/mindmap`         | Mermaid.js mind map generator   | Required |
+| POST   | `/study/case-brief`      | Legal case brief generator      | Required |
+| POST   | `/study/tutor`           | Socratic AI Tutor session       | Required |
 
 ### Authentication
 
@@ -367,7 +366,27 @@ Qdrant Cloud (vector storage + search)
 
 ```bash
 venv\Scripts\activate
+**check it if they have text layer or scaned
+python -c "
+import fitz, os
+folder = './real_laws/'
+for fname in sorted(os.listdir(folder)):
+    if not fname.lower().endswith('.pdf'):
+        continue
+    doc = fitz.open(os.path.join(folder, fname))
+    text = ''.join(page.get_text() for page in doc)
+    doc.close()
+    status = 'TEXT' if len(text.strip()) > 50 else 'SCANNED'
+    print(f'{status} | {fname}')
+"
+
+**for text pdf
 python fast_extract_text_pdfs.py
+
+**or for scan pdf
+
+python ocr_scanned_pdfs.py
+
 ```
 
 **Step 3** — Verify chunks and embeddings are correct:
@@ -400,85 +419,22 @@ print(f'Both match:        {has_text == has_embedding}')
 
 ```bash
 python deduplicate_laws.py -y
+python content_dedup.py
+
 ```
-
-##to verify complete data report
-python -c "
-import json
-import os
-
-# ── 1. Real laws folder mein kitni PDFs hain
-
-pdf_dir = './real_laws/'
-total_pdfs = len([f for f in os.listdir(pdf_dir) if f.endswith('.pdf')])
-
-# ── 2. Embeddings file mein kitne chunks hain
-
-total_chunks = 0
-files_done = set()
-has_embedding = 0
-has_text = 0
-missing_embedding = 0
-
-with open('law-embeddings-real.json', 'r', encoding='utf-8') as f:
-for line in f:
-line = line.strip()
-if not line:
-continue
-try:
-record = json.loads(line)
-total_chunks += 1
-files_done.add(record.get('source', ''))
-if record.get('embedding') and len(record['embedding']) == 768:
-has_embedding += 1
-else:
-missing_embedding += 1
-if record.get('text'):
-has_text += 1
-except:
-continue
-
-# ── 3. Kaunsi PDFs missing hain
-
-all_pdfs = set(os.listdir(pdf_dir))
-processed = files_done
-missing_pdfs = all_pdfs - processed
-
-print('='*50)
-print('COMPLETE VERIFICATION REPORT')
-print('='*50)
-print(f'Total PDFs in real_laws: {total_pdfs}')
-print(f'PDFs processed: {len(files_done)}')
-print(f'PDFs missing: {len(missing_pdfs)}')
-print(f'')
-print(f'Total chunks: {total_chunks}')
-print(f'Has text: {has_text}')
-print(f'Has embedding (768-dim): {has_embedding}')
-print(f'Missing embedding: {missing_embedding}')
-print(f'')
-print(f'All chunks complete: {missing_embedding == 0 and has_text == total_chunks}')
-print('='\*50)
-
-if missing_pdfs:
-print(f'MISSING PDFs ({len(missing_pdfs)}):')
-for p in sorted(missing_pdfs):
-if p.endswith('.pdf'):
-print(f' - {p}')
-else:
-print('ALL PDFs processed! Ready for migration.')
-"
 
 **Step 5** — Upload to Qdrant (auto-skips existing, safe to re-run):
 
-```bash
+````bash
 python migrate_to_qdrant_http.py
-```
+
+ python verify_corpus.py
 
 **Step 6** — Verify file count in real_laws directory:
 
 ```powershell
 (Get-ChildItem -Path .\real_laws -File).Count
-```
+````
 
 **Step 7** — Test search is working:
 
@@ -493,33 +449,25 @@ for r in results:
 "
 ```
 
-### Old Commands (DO NOT USE)
-
-```bash
-# These are replaced — do not run:
-# python process_real_laws_ocr.py          ← replaced by fast_extract_text_pdfs.py
-# python upload_real_laws_to_firestore.py  ← replaced by migrate_to_qdrant_http.py
-```
-
----
-
 ## 🔍 Vector Search Architecture
 
 ```
+
 User query (any language)
-      ↓
+↓
 intake_agent.py → detects language + category
-      ↓
+↓
 text-embedding-005 → 768-dim query vector
-      ↓
+↓
 Qdrant Cloud Search
-  filter: {language: "ur", category: "criminal"}
-  → top-5 chunks + scores  [<10ms]
-      ↓
+filter: {language: "ur", category: "criminal"}
+→ top-5 chunks + scores [<10ms]
+↓
 Chunk text returned inline from Qdrant payload
 (no extra Firestore call needed)
-      ↓
+↓
 Gemini 2.5 Flash → streamed legal answer
+
 ```
 
 ### Why Qdrant over Vertex AI Vector Search
@@ -538,26 +486,28 @@ Gemini 2.5 Flash → streamed legal answer
 ## 📊 Qdrant Collection Structure
 
 ```
+
 Collection: law_corpus
 Vector size: 768 (text-embedding-005)
 Distance: Cosine
 
 Payload fields (indexed for filtering):
-  language      → "ur" | "en" | "ps" | "pa" | "sd" | "bal"
-  category      → "criminal" | "civil" | "family" | "property" | ...
-  law_name      → "Pakistan_Penal_Code1860"
-  source        → "Pakistan Penal Code1860.pdf"
-  jurisdiction  → "Pakistan"
+language → "ur" | "en" | "ps" | "pa" | "sd" | "bal"
+category → "criminal" | "civil" | "family" | "property" | ...
+law_name → "Pakistan_Penal_Code1860"
+source → "Pakistan Penal Code1860.pdf"
+jurisdiction → "Pakistan"
 
 Other payload fields (stored, not indexed):
-  text          → full chunk text
-  section_number → "Section 302"
-  page_number   → 45
-  chunk_index   → 12
-  keywords      → ["murder", "qatl", "punishment"]
-  char_count    → 1150
-  word_count    → 210
-  timestamp     → "2026-05-23 22:00:00"
+text → full chunk text
+section_number → "Section 302"
+page_number → 45
+chunk_index → 12
+keywords → ["murder", "qatl", "punishment"]
+char_count → 1150
+word_count → 210
+timestamp → "2026-05-23 22:00:00"
+
 ```
 
 ---

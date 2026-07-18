@@ -28,6 +28,12 @@ htmlcov/
 .mypy_cache/
 .ruff_cache/
 pip-log.txt
+*.egg-info/
+build/
+dist/
+
+# Node tooling (package-lock.json remains tracked)
+node_modules/
 
 # ── Local Development Databases ──
 *.db
@@ -40,6 +46,10 @@ uploaded_ids.txt
 new_laws_list.txt
 real_laws/
 text_cache/
+*_progress.txt
+uploaded_chunk_ids.txt
+qdrant_upload_progress.txt
+ocr_progress.txt
 
 # ── System Logs & Temporary Files ──
 logs/
@@ -47,6 +57,14 @@ logs/
 output/
 scratch/
 .ipynb_checkpoints/
+*.tmp
+*.temp
+
+# Firebase local state
+.firebase/
+firebase-debug.log*
+firestore-debug.log*
+ui-debug.log*
 
 # ── IDEs, Editors & OS files ──
 .vscode/

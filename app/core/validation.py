@@ -16,9 +16,9 @@ def validate_environment():
     Fails fast with ValueError if crucial variables are missing.
     """
     # Required in every environment
-    critical_vars = {
-        "GEMINI_API_KEY": settings.GEMINI_API_KEY,
-    }
+    critical_vars = {}
+    if not settings.USE_VERTEX_AI:
+        critical_vars["GEMINI_API_KEY"] = settings.GEMINI_API_KEY
 
     if settings.ENVIRONMENT == "production":
         production_critical_vars = {

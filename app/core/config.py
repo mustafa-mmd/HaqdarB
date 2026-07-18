@@ -41,6 +41,7 @@ class Settings:
 
     # ── AI Keys ──
     GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
+    USE_VERTEX_AI: bool = os.getenv("USE_VERTEX_AI", "false").lower() == "true"
 
     # ── Firebase ──
     FIREBASE_SERVICE_ACCOUNT_PATH: str = os.getenv(
@@ -52,8 +53,8 @@ class Settings:
     RATE_LIMIT_PRO_PER_MINUTE: str = "100/minute"
 
     # ── Gemini Model Names ──
-    GEMINI_FLASH_MODEL: str = "gemini-2.5-flash"
-    GEMINI_FLASH_LITE_MODEL: str = "gemini-2.5-flash-lite"
+    GEMINI_FLASH_MODEL: str = os.getenv("GEMINI_FLASH_MODEL", "gemini-2.5-flash")
+    GEMINI_FLASH_LITE_MODEL: str = os.getenv("GEMINI_FLASH_LITE_MODEL", "gemini-2.5-flash-lite")
 
     # ── Notifications (Twilio & SendGrid) ──
     TWILIO_ACCOUNT_SID: str = os.getenv("TWILIO_ACCOUNT_SID", "")
